@@ -4,14 +4,15 @@
   "description": "Snap a broken GPX track onto a reference template polyline",
   "scripts": {
     "fix": "ts-node app.ts",
-    "build": "tsc && node dist/app.js"
+    "build": "tsc",
+    "build:exe": "powershell -ExecutionPolicy Bypass -File build-exe.ps1"
   },
   "dependencies": {
-    "dotenv": "^17.3.1",
     "fast-xml-parser": "^4.4.1"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",
+    "esbuild": "^0.25.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5"
   }

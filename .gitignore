@@ -3,5 +3,7 @@ dist/
 templates/
 broken/
 fixed/
-.env
+bundle.js
+sea-prep.blob
+trackfix.exe
 CLAUDE.md

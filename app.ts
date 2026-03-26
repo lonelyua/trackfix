@@ -1,7 +1,30 @@
-import 'dotenv/config';
 import * as fs from 'fs';
 import * as path from 'path';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
+
+// ============================================================
+//  ROOT PATH & WORKING DIRECTORIES
+// ============================================================
+
+// Injected by esbuild as `true` when building the Windows executable.
+// Undefined when running via ts-node or compiled JS.
+declare const __IS_SEA__: boolean | undefined;
+
+/**
+ * Base directory for templates/, broken/, fixed/.
+ * - SEA executable  → directory containing the .exe
+ * - ts-node / tsc   → directory containing app.ts / app.js
+ */
+const ROOT: string =
+  typeof __IS_SEA__ !== 'undefined' && __IS_SEA__
+    ? path.dirname(process.execPath)
+    : path.resolve(__dirname);
+
+const DIRS = {
+  templates: path.join(ROOT, 'templates'),
+  broken:    path.join(ROOT, 'broken'),
+  fixed:     path.join(ROOT, 'fixed'),
+};
 
 // ============================================================
 //  CONFIGURATION
@@ -13,6 +36,16 @@ const CONFIG = {
    * and will be redistributed along the template proportionally to their timestamps.
    */
   clusterThresholdMeters: 1.0,
+
+  /**
+   * Progressive projection window (metres).
+   * Each broken point is searched only within this distance ahead of the
+   * previous point's projected position on the template.  This prevents
+   * early points from snapping to a physically-nearby finish area instead
+   * of the actual start.  Increase if your broken track has very large
+   * GPS jumps between consecutive points.
+   */
+  progressiveWindowMeters: 500,
 
   /** Decimal places written to lat/lon in the output file. */
   coordPrecision: 6,
@@ -154,6 +187,56 @@ class TemplateTrack {
   }
 
   /**
+   * Like `project()` but restricts the search to the template window
+   * `[fromArcDist, fromArcDist + windowMeters]`.
+   *
+   * This is the progressive-projection variant: each broken point is only
+   * matched against the portion of the template that lies ahead of the
+   * previous point's projection, preventing early points from accidentally
+   * snapping to a finish section that happens to be physically nearby.
+   *
+   * Falls back to a full global search if the window contains no segments
+   * (e.g. `fromArcDist` is already past the end of the track).
+   */
+  projectFrom(
+    query: GpxPoint,
+    fromArcDist: number,
+    windowMeters: number,
+  ): { arcDist: number; snapped: GpxPoint } {
+    const toArcDist = fromArcDist + windowMeters;
+    const pXY = toXY(query, this.origin);
+
+    let bestSqDist = Infinity;
+    let bestArcDist = 0;
+    let bestXY: Vec2 = [0, 0];
+    let searched = false;
+
+    for (let i = 0; i < this.pts.length - 1; i++) {
+      if (this.cumDist[i + 1] < fromArcDist) continue; // segment ends before window
+      if (this.cumDist[i] > toArcDist) break;           // segment starts after window
+
+      const aXY = toXY(this.pts[i], this.origin);
+      const bXY = toXY(this.pts[i + 1], this.origin);
+
+      const { t, closest } = projectOntoSegment(pXY, aXY, bXY);
+      const sqDist = (pXY[0] - closest[0]) ** 2 + (pXY[1] - closest[1]) ** 2;
+      searched = true;
+
+      if (sqDist < bestSqDist) {
+        bestSqDist = sqDist;
+        const segLen = haversine(this.pts[i], this.pts[i + 1]);
+        bestArcDist = this.cumDist[i] + t * segLen;
+        bestXY = closest;
+      }
+    }
+
+    // Window contained no segments — fall back to global search
+    if (!searched) return this.project(query);
+
+    return { arcDist: bestArcDist, snapped: fromXY(bestXY, this.origin) };
+  }
+
+  /**
    * Convert an arc-distance back to lat/lon.
    * Clamps `d` to [0, totalLength].
    */
@@ -189,8 +272,10 @@ class TemplateTrack {
  *
  * Algorithm (three passes):
  *
- *  1. **Project** — each broken point is independently projected onto the
- *     nearest location on the template polyline.
+ *  1. **Project (progressive)** — each broken point is searched only within
+ *     a forward window `[prevArcDist, prevArcDist + progressiveWindow]` on
+ *     the template.  This prevents early points from snapping to a finish
+ *     area that happens to be physically close to the start.
  *
  *  2. **Monotone** — the resulting arc-distances are forced to be
  *     non-decreasing, so the output track never "goes backwards".
@@ -208,9 +293,20 @@ class TrackFixer {
    */
   clusterThreshold: number;
 
-  constructor(templatePoints: GpxPoint[], clusterThreshold = CONFIG.clusterThresholdMeters) {
+  /**
+   * How far ahead (metres) of the previous projected position to search
+   * on the template for the next point.
+   */
+  progressiveWindow: number;
+
+  constructor(
+    templatePoints: GpxPoint[],
+    clusterThreshold = CONFIG.clusterThresholdMeters,
+    progressiveWindow = CONFIG.progressiveWindowMeters,
+  ) {
     this.track = new TemplateTrack(templatePoints);
     this.clusterThreshold = clusterThreshold;
+    this.progressiveWindow = progressiveWindow;
   }
 
   /** Total length of the template track in metres. */
@@ -233,13 +329,19 @@ class TrackFixer {
     });
   }
 
-  // ---- Pass 1: project ----
+  // ---- Pass 1: progressive project ----
 
   private projectAll(pts: GpxPoint[]): ProjectedPoint[] {
-    return pts.map(p => {
-      const { arcDist } = this.track.project(p);
-      return { ...p, templateDist: arcDist };
-    });
+    const result: ProjectedPoint[] = [];
+    let prevArcDist = 0;
+
+    for (const p of pts) {
+      const { arcDist } = this.track.projectFrom(p, prevArcDist, this.progressiveWindow);
+      result.push({ ...p, templateDist: arcDist });
+      prevArcDist = arcDist;
+    }
+
+    return result;
   }
 
   // ---- Pass 2: monotone ----
@@ -417,55 +519,38 @@ function parseArgs(): { templateName: string } {
   return { templateName: args[tIdx + 1] };
 }
 
-/**
- * Resolve a directory path: env var → local subfolder → error.
- * Returns the resolved path without checking existence (caller decides).
- */
-function resolveDir(envVar: string, fallbackName: string, root: string): string {
-  const fromEnv = process.env[envVar];
-  return fromEnv ? path.resolve(fromEnv) : path.join(root, fallbackName);
-}
-
-function requireDir(dirPath: string, envVar: string, fallbackName: string): void {
-  if (!fs.existsSync(dirPath)) {
-    console.error(`Directory not found: ${dirPath}`);
-    console.error(`  → set ${envVar} in .env, or create a "${fallbackName}/" folder here`);
-    process.exit(1);
-  }
-}
-
 function main(): void {
   const { templateName } = parseArgs();
-  const root = path.resolve(__dirname);
 
-  const templatesDir = resolveDir('TEMPLATES_DIR', 'templates', root);
-  const brokenDir    = resolveDir('BROKEN_DIR',    'broken',    root);
-  const fixedDir     = resolveDir('FIXED_DIR',     'fixed',     root);
+  if (!fs.existsSync(DIRS.templates)) {
+    console.error(`Directory not found: ${DIRS.templates}`);
+    console.error(`  → create a "templates/" folder next to the app`);
+    process.exit(1);
+  }
+  if (!fs.existsSync(DIRS.broken)) {
+    console.error(`Directory not found: ${DIRS.broken}`);
+    console.error(`  → create a "broken/" folder next to the app`);
+    process.exit(1);
+  }
 
-  requireDir(templatesDir, 'TEMPLATES_DIR', 'templates');
-  requireDir(brokenDir,    'BROKEN_DIR',    'broken');
+  fs.mkdirSync(DIRS.fixed, { recursive: true });
 
   // Resolve template file: accept "1", "1.gpx", etc.
   const templateFile = templateName.endsWith('.gpx') ? templateName : `${templateName}.gpx`;
-  const templatePath = path.join(templatesDir, templateFile);
+  const templatePath = path.join(DIRS.templates, templateFile);
 
   if (!fs.existsSync(templatePath)) {
     console.error(`Template not found: ${templatePath}`);
-    console.error(`  → check the file exists in ${templatesDir}`);
     process.exit(1);
   }
 
-  fs.mkdirSync(fixedDir, { recursive: true });
-
-  // Load and parse template
   const reader = new GpxReader();
   const { points: templatePts } = reader.read(fs.readFileSync(templatePath, 'utf-8'));
   const fixer = new TrackFixer(templatePts);
 
   console.log(`Template: ${templateFile} — ${templatePts.length} points, length ${Math.round(fixer.templateLength)} m`);
 
-  // Process all .gpx files in broken/
-  const brokenFiles = fs.readdirSync(brokenDir).filter(f => f.toLowerCase().endsWith('.gpx'));
+  const brokenFiles = fs.readdirSync(DIRS.broken).filter(f => f.toLowerCase().endsWith('.gpx'));
 
   if (brokenFiles.length === 0) {
     console.log('No .gpx files found in broken/');
@@ -479,8 +564,8 @@ function main(): void {
   let fail = 0;
 
   for (const filename of brokenFiles) {
-    const brokenPath = path.join(brokenDir, filename);
-    const fixedPath  = path.join(fixedDir, filename);
+    const brokenPath = path.join(DIRS.broken, filename);
+    const fixedPath  = path.join(DIRS.fixed, filename);
     try {
       const { points: brokenPts, raw: brokenRaw } = reader.read(fs.readFileSync(brokenPath, 'utf-8'));
       const fixedPts = fixer.fix(brokenPts);
@@ -493,7 +578,7 @@ function main(): void {
     }
   }
 
-  console.log(`\nDone. ${ok} fixed, ${fail} failed → ${fixedDir}`);
+  console.log(`\nDone. ${ok} fixed, ${fail} failed → ${DIRS.fixed}`);
 }
 
 main();
