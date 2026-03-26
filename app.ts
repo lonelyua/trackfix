@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import * as fs from 'fs';
 import * as path from 'path';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
@@ -405,34 +406,94 @@ class GpxWriter {
 //  ENTRY POINT
 // ============================================================
 
+function parseArgs(): { templateName: string } {
+  const args = process.argv.slice(2);
+  const tIdx = args.indexOf('-t');
+  if (tIdx === -1 || !args[tIdx + 1]) {
+    console.error('Usage: npm run fix -- -t <template-name>');
+    console.error('Example: npm run fix -- -t 1');
+    process.exit(1);
+  }
+  return { templateName: args[tIdx + 1] };
+}
+
+/**
+ * Resolve a directory path: env var → local subfolder → error.
+ * Returns the resolved path without checking existence (caller decides).
+ */
+function resolveDir(envVar: string, fallbackName: string, root: string): string {
+  const fromEnv = process.env[envVar];
+  return fromEnv ? path.resolve(fromEnv) : path.join(root, fallbackName);
+}
+
+function requireDir(dirPath: string, envVar: string, fallbackName: string): void {
+  if (!fs.existsSync(dirPath)) {
+    console.error(`Directory not found: ${dirPath}`);
+    console.error(`  → set ${envVar} in .env, or create a "${fallbackName}/" folder here`);
+    process.exit(1);
+  }
+}
+
 function main(): void {
+  const { templateName } = parseArgs();
   const root = path.resolve(__dirname);
 
-  const templatePath = path.join(root, 'template.gpx');
-  const brokenPath = path.join(root, 'broken.gpx');
-  const fixedPath = path.join(root, 'fixed.gpx');
+  const templatesDir = resolveDir('TEMPLATES_DIR', 'templates', root);
+  const brokenDir    = resolveDir('BROKEN_DIR',    'broken',    root);
+  const fixedDir     = resolveDir('FIXED_DIR',     'fixed',     root);
 
-  console.log('Reading input files...');
-  const templateXml = fs.readFileSync(templatePath, 'utf-8');
-  const brokenXml = fs.readFileSync(brokenPath, 'utf-8');
+  requireDir(templatesDir, 'TEMPLATES_DIR', 'templates');
+  requireDir(brokenDir,    'BROKEN_DIR',    'broken');
 
+  // Resolve template file: accept "1", "1.gpx", etc.
+  const templateFile = templateName.endsWith('.gpx') ? templateName : `${templateName}.gpx`;
+  const templatePath = path.join(templatesDir, templateFile);
+
+  if (!fs.existsSync(templatePath)) {
+    console.error(`Template not found: ${templatePath}`);
+    console.error(`  → check the file exists in ${templatesDir}`);
+    process.exit(1);
+  }
+
+  fs.mkdirSync(fixedDir, { recursive: true });
+
+  // Load and parse template
   const reader = new GpxReader();
-  const { points: templatePts } = reader.read(templateXml);
-  const { points: brokenPts, raw: brokenRaw } = reader.read(brokenXml);
-
+  const { points: templatePts } = reader.read(fs.readFileSync(templatePath, 'utf-8'));
   const fixer = new TrackFixer(templatePts);
 
-  console.log(`  template.gpx → ${templatePts.length} points, length ${Math.round(fixer.templateLength)} m`);
-  console.log(`  broken.gpx   → ${brokenPts.length} points`);
-  console.log('\nFixing track...');
+  console.log(`Template: ${templateFile} — ${templatePts.length} points, length ${Math.round(fixer.templateLength)} m`);
 
-  const fixedPts = fixer.fix(brokenPts);
+  // Process all .gpx files in broken/
+  const brokenFiles = fs.readdirSync(brokenDir).filter(f => f.toLowerCase().endsWith('.gpx'));
+
+  if (brokenFiles.length === 0) {
+    console.log('No .gpx files found in broken/');
+    return;
+  }
+
+  console.log(`Processing ${brokenFiles.length} file(s)...\n`);
 
   const writer = new GpxWriter();
-  const fixedXml = writer.write(brokenRaw, fixedPts);
+  let ok = 0;
+  let fail = 0;
 
-  fs.writeFileSync(fixedPath, fixedXml, 'utf-8');
-  console.log(`Done. Saved ${fixedPts.length} points → ${fixedPath}`);
+  for (const filename of brokenFiles) {
+    const brokenPath = path.join(brokenDir, filename);
+    const fixedPath  = path.join(fixedDir, filename);
+    try {
+      const { points: brokenPts, raw: brokenRaw } = reader.read(fs.readFileSync(brokenPath, 'utf-8'));
+      const fixedPts = fixer.fix(brokenPts);
+      fs.writeFileSync(fixedPath, writer.write(brokenRaw, fixedPts), 'utf-8');
+      console.log(`  ✓ ${filename}  (${brokenPts.length} → ${fixedPts.length} pts)`);
+      ok++;
+    } catch (err) {
+      console.error(`  ✗ ${filename}  ERROR: ${(err as Error).message}`);
+      fail++;
+    }
+  }
+
+  console.log(`\nDone. ${ok} fixed, ${fail} failed → ${fixedDir}`);
 }
 
 main();

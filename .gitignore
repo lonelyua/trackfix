@@ -1,4 +1,7 @@
 node_modules/
 dist/
-*.gpx
+templates/
+broken/
+fixed/
+.env
 CLAUDE.md

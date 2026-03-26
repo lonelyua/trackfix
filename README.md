@@ -15,10 +15,16 @@ Elevations (`<ele>`) and timestamps (`<time>`) from `broken.gpx` are preserved u
 
 ```
 trackfix/
-├── app.ts          # all source code
-├── template.gpx    # reference track (add manually)
-├── broken.gpx      # corrupted track (add manually)
-├── fixed.gpx       # output (generated)
+├── app.ts              # all source code
+├── templates/          # reference tracks (add manually)
+│   ├── 1.gpx
+│   └── 2.gpx
+├── broken/             # corrupted tracks to process (add manually)
+│   ├── track_a.gpx
+│   └── track_b.gpx
+├── fixed/              # results (generated, mirrors broken/)
+│   ├── track_a.gpx
+│   └── track_b.gpx
 ├── package.json
 └── tsconfig.json
 ```
@@ -38,13 +44,27 @@ trackfix/
 npm install
 ```
 
-Place `template.gpx` and `broken.gpx` in the project root, then:
+### Directory paths
 
-```bash
-npm start
+By default the app looks for `templates/`, `broken/`, and `fixed/` subfolders in the project root. You can point them anywhere by creating a `.env` file (see `.env.example`):
+
+```dotenv
+TEMPLATES_DIR=/path/to/my/templates
+BROKEN_DIR=/path/to/my/broken
+FIXED_DIR=/path/to/my/fixed
 ```
 
-The result is written to `fixed.gpx` in the same directory.
+If a variable is not set, the app falls back to the local subfolder. If the folder doesn't exist, it prints a clear error with a hint.
+
+### Running
+
+```bash
+npm run fix -- -t 1          # uses templates/1.gpx
+npm run fix -- -t myroute    # uses templates/myroute.gpx
+```
+
+All `.gpx` files from `broken/` are processed against the chosen template.
+Results are written to `fixed/` with the same filenames. The `fixed/` directory is created automatically.
 
 To compile to plain JS:
 
