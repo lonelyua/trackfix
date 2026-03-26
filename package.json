@@ -1,11 +1,11 @@
 {
   "name": "trackfix",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Snap a broken GPX track onto a reference template polyline",
   "scripts": {
     "fix": "ts-node app.ts",
     "build": "tsc",
-    "build:exe": "powershell -ExecutionPolicy Bypass -File build-exe.ps1"
+    "build:exe": "bash build-exe.sh"
   },
   "dependencies": {
     "fast-xml-parser": "^4.4.1"

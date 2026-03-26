@@ -1,5 +1,5 @@
 {
-  "main": "bundle.js",
-  "output": "sea-prep.blob",
+  "main": "dist/bundle.js",
+  "output": "dist/sea-prep.blob",
   "disableExperimentalSEAWarning": true
 }

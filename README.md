@@ -57,29 +57,30 @@ npm run fix -- -t myroute    # uses templates/myroute.gpx
 
 All `.gpx` files from `broken/` are processed. Results go to `fixed/` with the same filenames.
 
-## Building a Windows executable
+## Building a Windows executable (from Linux)
 
-Requires Node.js 20+ installed on Windows. Run from the project root in PowerShell or cmd:
+Requires Node.js 20+ and `osslsigncode`:
 
-```powershell
+```bash
+sudo apt install osslsigncode
 npm run build:exe
 ```
 
-This runs `build-exe.ps1` which:
-1. Bundles `app.ts` + dependencies into `bundle.js` via esbuild
-2. Generates `sea-prep.blob` via Node SEA
-3. Copies `node.exe` → `trackfix.exe` and injects the blob
+`build-exe.sh` does the following:
+1. Downloads the matching `node.exe` (Windows x64) from nodejs.org
+2. Bundles `app.ts` + dependencies into `bundle.js` via esbuild
+3. Generates `sea-prep.blob` via Node SEA
+4. Strips the Microsoft signature from `node.exe` with `osslsigncode`
+5. Injects the blob into `trackfix.exe` with `postject`
 
-The resulting `trackfix.exe` is standalone (no Node.js needed on the target machine).
-Place `templates/`, `broken/` next to the exe and run:
+The resulting `trackfix.exe` is standalone — no Node.js needed on the target machine.
+Place `templates/` and `broken/` next to the exe and run:
 
 ```
 trackfix.exe -t 1
 ```
 
 A console window opens, shows progress, and closes when done.
-
-> **Note:** `signtool` (Windows SDK) is used to strip the original Node signature before injection. If not installed, the step is skipped — Windows SmartScreen may warn on first run.
 
 ## Configuration
 
