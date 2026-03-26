@@ -1,0 +1,17 @@
+{
+  "name": "trackfix",
+  "version": "1.0.0",
+  "description": "Snap a broken GPX track onto a reference template polyline",
+  "scripts": {
+    "start": "ts-node app.ts",
+    "build": "tsc && node dist/app.js"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^4.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}
